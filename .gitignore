@@ -1,0 +1,17 @@
+*.DS_Store
+.vscode/
+wandb
+__pycache__/
+**/__pycache__/
+*.pyc
+exps
+samples
+debug*
+logs
+results
+experiments
+experiments_updated
+data
+model_cache
+evaluation/reference_stats
+multibudget_results
