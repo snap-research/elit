@@ -2,26 +2,24 @@
 ELIT Multi-Budget Inference Script.
 
 Generates a single image at all possible inference budgets for an ELIT model,
-saves them to a folder, and measures latency and FLOPs (after warming up the model).
-Produces figures for budget vs FLOPs and budget vs latency.
+measures FLOPs, and produces a budget vs FLOPs figure and an image grid.
 
 Usage:
   python elit_multibudget_inference.py \
-      --model ELIT-SiT-XL/2 \
+      --train-config experiments/train/elit_sit_xl_256.yaml \
       --ckpt path/to/ckpt.pt \
-      --resolution 256 \
       --class-label 207 \
       --output-dir multibudget_results
 
-  # From YAML config:
+  # With eval config overrides:
   python elit_multibudget_inference.py \
-      --config experiments_updated/generation/elit_sit_b_256.yaml \
+      --train-config experiments/train/elit_sit_xl_256.yaml \
+      --eval-config  experiments/generation/elit_sit_xl_256.yaml \
       --ckpt path/to/ckpt.pt \
       --class-label 207
 """
 
 import os
-import time
 import json
 import argparse
 
@@ -67,12 +65,14 @@ def _ensure_distributed():
 def parse_args():
     parser = argparse.ArgumentParser(
         description="ELIT Multi-Budget Inference: generate a single image at "
-        "every budget, measure latency & FLOPs, and produce plots.",
+        "every budget, measure FLOPs, and produce plots.",
     )
 
-    # Config
-    parser.add_argument("--config", type=str, default=None,
-                        help="Path to YAML config file.")
+    # Config files
+    parser.add_argument("--train-config", type=str, default=None,
+                        help="Path to a training YAML config (model architecture settings).")
+    parser.add_argument("--eval-config", type=str, default=None,
+                        help="Path to an evaluation YAML config (sampling settings). CLI args override.")
 
     # Model
     parser.add_argument("--model", type=str, default="ELIT-SiT-XL/2",
@@ -94,6 +94,8 @@ def parse_args():
     parser.add_argument("--elit-max-mask-prob", type=float, default=0.0, help="Maximum masking probability for ELIT during training (0.0 = no masking)")
     parser.add_argument("--elit-min-mask-prob", type=float, default=None)
     parser.add_argument("--elit-group-size", type=int, default=4)
+    parser.add_argument("--elit-read-depth", type=int, default=1, help="Depth of the read (cross-attention) layer")
+    parser.add_argument("--elit-write-depth", type=int, default=1, help="Depth of the write (cross-attention) layer")
 
     # VAE
     parser.add_argument("--vae", type=str, default="ema", choices=["ema", "mse"])
@@ -112,7 +114,7 @@ def parse_args():
     parser.add_argument("--legacy", action="store_true", default=False)
 
     # Generation settings
-    parser.add_argument("--class-label", type=int, default=207,
+    parser.add_argument("--class-label", type=int, default=263,
                         help="ImageNet class label for generation (default: 207 = golden retriever).")
     parser.add_argument("--seed", type=int, default=42)
 
@@ -121,30 +123,45 @@ def parse_args():
                         help="List of inference budgets to evaluate. "
                              "If not set, uses np.arange(0.1, 1.05, 0.1).")
 
-    # Benchmarking
-    parser.add_argument("--warmup-iters", type=int, default=3,
-                        help="Number of warmup iterations before measuring.")
-    parser.add_argument("--repeat", type=int, default=5,
-                        help="Number of repeated runs per budget for latency measurement.")
-
     # Output
     parser.add_argument("--output-dir", type=str, default="multibudget_results")
     parser.add_argument("--tf32", action=argparse.BooleanOptionalAction, default=True)
 
     # ── Parse with YAML support ──
+    # Priority: CLI args > eval-config > train-config > defaults
+    preliminary, _ = parser.parse_known_args()
+
+    TRAIN_KEYS_TO_IMPORT = {
+        'model', 'encoder_depth', 'resolution', 'num_classes',
+        'fused_attn', 'qk_norm',
+        'enable_repa', 'projector_embed_dims',
+        'elit_max_mask_prob', 'elit_min_mask_prob', 'elit_group_size',
+        'elit_read_depth', 'elit_write_depth',
+    }
+
+    defaults = {a.dest: a.default for a in parser._actions if a.dest != "help"}
+
+    if preliminary.train_config is not None:
+        with open(preliminary.train_config, "r") as f:
+            train_cfg = yaml.safe_load(f) or {}
+        train_cfg = {k.replace("-", "_"): v for k, v in train_cfg.items()}
+        for k, v in train_cfg.items():
+            if k in TRAIN_KEYS_TO_IMPORT:
+                defaults[k] = v
+
+    if preliminary.eval_config is not None:
+        with open(preliminary.eval_config, "r") as f:
+            eval_cfg = yaml.safe_load(f) or {}
+        eval_cfg = {k.replace("-", "_"): v for k, v in eval_cfg.items()}
+        defaults.update(eval_cfg)
+
+    parser.set_defaults(**defaults)
     args = parser.parse_args()
 
-    if args.config is not None:
-        with open(args.config, "r") as f:
-            yaml_cfg = yaml.safe_load(f) or {}
-        # YAML values fill in only unset / default CLI values
-        yaml_cfg = {k.replace("-", "_"): v for k, v in yaml_cfg.items()}
-        for k, v in yaml_cfg.items():
-            if hasattr(args, k) and parser.get_default(k) == getattr(args, k):
-                setattr(args, k, v)
-
     if args.budgets is None:
-        args.budgets = np.arange(0.1, 1.05, 0.1).tolist()
+        g = args.elit_group_size
+        n_levels = g * g
+        args.budgets = (np.arange(2, n_levels + 1) / n_levels).tolist()
 
     return args
 
@@ -170,6 +187,8 @@ def build_model(args, device):
         elit_max_mask_prob=args.elit_max_mask_prob,
         elit_min_mask_prob=args.elit_min_mask_prob,
         group_size=args.elit_group_size,
+        elit_read_depth=args.elit_read_depth,
+        elit_write_depth=args.elit_write_depth,
         **block_kwargs,
     )
 
@@ -266,26 +285,12 @@ def main():
     # Prepare inputs (batch size 1)
     y = torch.tensor([args.class_label], device=device)
 
-    # Output directory
     os.makedirs(args.output_dir, exist_ok=True)
-    images_dir = os.path.join(args.output_dir, "images")
-    os.makedirs(images_dir, exist_ok=True)
 
     budgets = sorted(args.budgets)
     print(f"\nBudgets to evaluate: {budgets}")
-    print(f"Warmup iterations: {args.warmup_iters}, repeat: {args.repeat}")
 
-    # ── Warmup ──
-    print("\nWarming up model...")
-    for _ in range(args.warmup_iters):
-        z_warmup = torch.randn(1, model.in_channels, latent_size, latent_size, device=device)
-        _ = sample_single(model, z_warmup, y, args, device, inference_budget=1.0)
-    torch.cuda.synchronize()
-    print("Warmup complete.\n")
-
-    # Use a fixed noise seed for all budgets so images are comparable
     rng_state = torch.cuda.get_rng_state()
-
     results = []
 
     for budget in budgets:
@@ -295,7 +300,6 @@ def main():
         # ── Measure FLOPs (single model forward, not full sampling loop) ──
         x_dummy = torch.randn(1, model.in_channels, latent_size, latent_size, device=device)
         t_dummy = torch.tensor([0.5], device=device, dtype=torch.float32)
-        # For CFG, we double the batch
         if args.cfg_scale > 1.0:
             x_flop = torch.cat([x_dummy] * 2, dim=0)
             y_flop = torch.cat([y, torch.tensor([1000], device=device)], dim=0)
@@ -305,86 +309,32 @@ def main():
         flops = measure_flops_single_forward(model, x_flop, t_dummy.expand(x_flop.shape[0]), y_flop, budget_val)
         gflops = flops / 1e9
 
-        # ── Measure latency (full sampling loop) ──
-        latencies = []
-        for r in range(args.repeat):
-            torch.cuda.set_rng_state(rng_state)
-            z = torch.randn(1, model.in_channels, latent_size, latent_size, device=device)
-            torch.cuda.synchronize()
-            t0 = time.perf_counter()
-            samples = sample_single(model, z, y, args, device, inference_budget=budget_val)
-            torch.cuda.synchronize()
-            t1 = time.perf_counter()
-            latencies.append(t1 - t0)
-
-        mean_latency = np.mean(latencies)
-        std_latency = np.std(latencies)
-
-        # ── Decode and save image ──
+        # ── Generate and decode ──
         torch.cuda.set_rng_state(rng_state)
         z = torch.randn(1, model.in_channels, latent_size, latent_size, device=device)
         samples = sample_single(model, z, y, args, device, inference_budget=budget_val)
         pixel_images = decode_latent(vae, samples, device)
 
-        img_path = os.path.join(images_dir, f"budget_{budget_val:.2f}.png")
-        Image.fromarray(pixel_images[0]).save(img_path)
-
         entry = {
             "budget": budget_val,
             "gflops_per_forward": round(gflops, 2),
             "flops_per_forward": flops,
-            "latency_mean_s": round(mean_latency, 4),
-            "latency_std_s": round(std_latency, 4),
-            "image_path": img_path,
+            "image": Image.fromarray(pixel_images[0]),
         }
         results.append(entry)
-        print(f"  GFLOPs/fwd: {gflops:.2f}  |  Latency: {mean_latency:.3f}s ± {std_latency:.3f}s  |  Saved: {img_path}")
+        print(f"  GFLOPs/fwd: {gflops:.2f}")
 
     # ── Save results JSON ──
+    json_results = [{k: v for k, v in r.items() if k != "image"} for r in results]
     results_path = os.path.join(args.output_dir, "results.json")
     with open(results_path, "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(json_results, f, indent=2)
     print(f"\nResults saved to {results_path}")
 
-    # ── Create figures ──
+    # ── Create FLOPs figure ──
     budgets_arr = np.array([r["budget"] for r in results])
     gflops_arr = np.array([r["gflops_per_forward"] for r in results])
-    latency_arr = np.array([r["latency_mean_s"] for r in results])
-    latency_std_arr = np.array([r["latency_std_s"] for r in results])
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-    # ── Budget vs GFLOPs ──
-    ax = axes[0]
-    ax.plot(budgets_arr, gflops_arr, "o-", color="#2196F3", linewidth=2, markersize=8)
-    ax.set_xlabel("Inference Budget (fraction of latent tokens)", fontsize=12)
-    ax.set_ylabel("GFLOPs per forward pass", fontsize=12)
-    ax.set_title("Budget vs. FLOPs", fontsize=14, fontweight="bold")
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim(0, 1.05)
-    for i, (b, g) in enumerate(zip(budgets_arr, gflops_arr)):
-        ax.annotate(f"{g:.0f}", (b, g), textcoords="offset points",
-                    xytext=(0, 10), ha="center", fontsize=8)
-
-    # ── Budget vs Latency ──
-    ax = axes[1]
-    ax.errorbar(budgets_arr, latency_arr, yerr=latency_std_arr,
-                fmt="o-", color="#FF5722", linewidth=2, markersize=8,
-                capsize=4, capthick=1.5)
-    ax.set_xlabel("Inference Budget (fraction of latent tokens)", fontsize=12)
-    ax.set_ylabel("Latency (seconds)", fontsize=12)
-    ax.set_title("Budget vs. Latency", fontsize=14, fontweight="bold")
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim(0, 1.05)
-    for i, (b, l) in enumerate(zip(budgets_arr, latency_arr)):
-        ax.annotate(f"{l:.2f}s", (b, l), textcoords="offset points",
-                    xytext=(0, 10), ha="center", fontsize=8)
-
-    plt.tight_layout()
-    plt.close()
-
-    # ── Also create individual figures ──
-    # FLOPs figure
     fig_flops, ax_flops = plt.subplots(figsize=(7, 5))
     ax_flops.plot(budgets_arr, gflops_arr, "o-", color="#2196F3", linewidth=2, markersize=8)
     ax_flops.set_xlabel("Inference Budget (fraction of latent tokens)", fontsize=12)
@@ -400,33 +350,10 @@ def main():
     plt.close(fig_flops)
     print(f"FLOPs figure saved to {fig_flops_path}")
 
-    # Latency figure
-    fig_lat, ax_lat = plt.subplots(figsize=(7, 5))
-    ax_lat.errorbar(budgets_arr, latency_arr, yerr=latency_std_arr,
-                    fmt="o-", color="#FF5722", linewidth=2, markersize=8,
-                    capsize=4, capthick=1.5)
-    ax_lat.set_xlabel("Inference Budget (fraction of latent tokens)", fontsize=12)
-    ax_lat.set_ylabel("Latency (seconds)", fontsize=12)
-    ax_lat.set_title("Budget vs. Latency", fontsize=14, fontweight="bold")
-    ax_lat.grid(True, alpha=0.3)
-    ax_lat.set_xlim(0, 1.05)
-    for b, l in zip(budgets_arr, latency_arr):
-        ax_lat.annotate(f"{l:.2f}s", (b, l), textcoords="offset points",
-                        xytext=(0, 10), ha="center", fontsize=8)
-    fig_lat_path = os.path.join(args.output_dir, "budget_vs_latency.png")
-    fig_lat.savefig(fig_lat_path, dpi=150, bbox_inches="tight")
-    plt.close(fig_lat)
-    print(f"Latency figure saved to {fig_lat_path}")
-
     # ── Create image grid ──
     print("\nCreating image grid...")
-    imgs = []
-    for r in results:
-        img = Image.open(r["image_path"])
-        imgs.append(img)
-
-    n_imgs = len(imgs)
-    img_w, img_h = imgs[0].size
+    n_imgs = len(results)
+    img_w, img_h = results[0]["image"].size
     cols = min(n_imgs, 5)
     rows = (n_imgs + cols - 1) // cols
     label_height = 30
@@ -445,14 +372,15 @@ def main():
         draw = None
         font = None
 
-    for idx, (img, r) in enumerate(zip(imgs, results)):
+    for idx, r in enumerate(results):
+        img = r["image"]
         row = idx // cols
         col = idx % cols
         x_off = col * img_w
         y_off = row * (img_h + label_height)
         grid.paste(img, (x_off, y_off))
         if draw is not None:
-            label = f"b={r['budget']:.1f} | {r['gflops_per_forward']:.0f} GF | {r['latency_mean_s']:.2f}s"
+            label = f"b={r['budget']:.3f} | {r['gflops_per_forward']:.0f} GF"
             draw.text((x_off + 5, y_off + img_h + 5), label, fill=(0, 0, 0), font=font)
 
     grid_path = os.path.join(args.output_dir, "image_grid.png")

@@ -4,7 +4,7 @@
 
 
 [![Project Page](https://img.shields.io/badge/Project-Page-green.svg)](https://snap-research.github.io/elit/)
-[![arXiv](https://img.shields.io/badge/arXiv-XXXX.XXXXX-b31b1b)](https://arxiv.org/abs/XXXX.XXXXX)
+[![arXiv](https://img.shields.io/badge/arXiv-2603.12245-b31b1b)](https://arxiv.org/abs/2603.12245)
 <!-- [![GitHub](https://img.shields.io/badge/GitHub-Code-black.svg)](https://github.com/snap-research/elit) -->
 
 **Moayed Haji-Ali<sup>1,2</sup>, Willi Menapace<sup>2</sup>, Ivan Skorokhodov<sup>2</sup>, Dogyun Park<sup>2</sup>, Anil Kag<sup>2</sup>, Michael Vasilkovsky<sup>2</sup>, Sergey Tulyakov<sup>2</sup>, Vicente Ordonez<sup>1</sup>, Aliaksandr Siarohin<sup>2</sup>**
@@ -48,24 +48,35 @@ This repo provides a reimplementation of ELIT on top of SiT, following [REPA](ht
 
 ### ImageNet 256×256
 
-| Method | FID↓ | sFID↓ | IS↑ | Precision↑ | Recall↑ | FLOPs |
-|--------|------|-------|-----|------------|---------|-------|
-| SiT-XL/2 | 18.58 | 5.38 | 75.39 | 0.246 | 0.526 | 182 |
-| ELIT-SiT-XL/2 | 11.74 | 6.03 | 112.11 | 0.315 | 0.549 | 188 |
-| ELIT-SiT-XL/2 (multibudget) | 12.61 | 6.25 | 110.11 | 0.305 | 0.558 | 127 |
+| Method | Steps | BS | FID↓ | IS↑ | Precision↑ | Recall↑ | Checkpoint |
+|--------|-------|------------|------|-----|------------|---------|------------|
+| SiT-XL/2 | 400K | 256 | 18.97 | 73.32 | 0.252 | 0.530 | [sit_imagenet_256px_1k_0400000.pt](https://huggingface.co/mali6/elit/resolve/main/sit_imagenet_256px_1k_0400000.pt) |
+| ELIT-SiT-XL/2 | 400K | 256 | 11.23 | 109.66 | 0.314 | 0.549 | [elit_sit_imagenet_256px_1k_0400000.pt](https://huggingface.co/mali6/elit/resolve/main/elit_sit_imagenet_256px_1k_0400000.pt) |
+| ELIT-SiT-XL/2 (multibudget) | 400K | 256 | 9.98 | 120.34 | 0.332 | 0.553 | [elit_sit_mb_imagenet_256px_1k_0400000.pt](https://huggingface.co/mali6/elit/resolve/main/elit_sit_mb_imagenet_256px_1k_0400000.pt) |
+| ELIT-SiT-XL/2 (multibudget) | 2M | 256 | 8.93 | 144.57 | 0.346 | 0.558 | [elit_sit_mb_imagenet_256px_1k_2000000.pt](https://huggingface.co/mali6/elit/resolve/main/elit_sit_mb_imagenet_256px_1k_2000000.pt) |
 
 ### ImageNet 512×512
 
-| Method | FID↓ | sFID↓ | IS↑ | Precision↑ | Recall↑ | FLOPs |
-|--------|------|-------|-----|------------|---------|-------|
-| SiT-XL/2 | 33.24 | 8.55 | 48.22 | 0.308 | 0.581 | 806 |
-| ELIT-SiT-XL/2 | 10.82 | 6.53 | 114.82 | 0.489 | 0.522 | 831 |
-| ELIT-SiT-XL/2 (multibudget) | 9.55 | 6.65 | 122.56 | 0.497 | 0.531 | 536 |
+| Method | Steps | BS | FID↓ | IS↑ | Precision↑ | Recall↑ | Checkpoint |
+|--------|-------|------------|------|-----|------------|---------|------------|
+| SiT-XL/2 | 400K | 256 | 21.82 | 67.58 | 0.420 | 0.495 | [sit_imagenet_512px_1k_0400000.pt](https://huggingface.co/mali6/elit/resolve/main/sit_imagenet_512px_1k_0400000.pt) |
+| DFM-SiT-XL/2 | 400K | 256 | 18.74 | 80.16 | 0.442 | 0.537 | [dfm_sit_imagenet_512px_1k_0400000.pt](https://huggingface.co/mali6/elit/resolve/main/dfm_sit_imagenet_512px_1k_0400000.pt) |
+| ELIT-SiT-XL/2 | 400K | 256 | 10.28 | 114.06 | 0.481 | 0.552 | [elit_sit_imagenet_512px_1k_0400000.pt](https://huggingface.co/mali6/elit/resolve/main/elit_sit_imagenet_512px_1k_0400000.pt) |
+| ELIT-SiT-XL/2 (multibudget) | 400K | 256 | 9.65 | 117.99 | 0.499 | 0.522 | [elit_sit_mb_imagenet_512px_1k_0400000.pt](https://huggingface.co/mali6/elit/resolve/main/elit_sit_mb_imagenet_512px_1k_0400000.pt) |
+| ELIT-SiT-XL/2 (multibudget) | 1M | 256 | 8.77 | 135.27 | 0.498 | 0.550 | [elit_sit_mb_imagenet_512px_1k_1000000.pt](https://huggingface.co/mali6/elit/resolve/main/elit_sit_mb_imagenet_512px_1k_1000000.pt) |
 
+### Downloading Checkpoints
 
+All pretrained checkpoints are hosted on [Hugging Face](https://huggingface.co/mali6/elit). To download a checkpoint:
 
-<!-- TODO: Add pretrained checkpoints and fill in FLOPs -->
-Pretrained checkpoints of the above experiments will be released soon.
+```bash
+# Using huggingface-cli (recommended)
+pip install huggingface_hub
+huggingface-cli download mali6/elit <CHECKPOINT_FILENAME> --local-dir ./checkpoints
+
+# Example: download the ELIT multibudget 512px 1M-step checkpoint
+huggingface-cli download mali6/elit elit_sit_mb_imagenet_512px_1k_1000000.pt --local-dir ./checkpoints
+```
 
 ---
 
@@ -154,8 +165,7 @@ accelerate launch train.py --model ELIT-SiT-XL/2 --exp-name elit-sit-xl-2-256px 
 # 512px — sample all valid budgets
 accelerate launch train.py --model ELIT-SiT-XL/2 --exp-name elit-sit-xl-2-512px --data-dir [DATA_DIR] --elit-min-mask-prob 0 --elit-max-mask-prob 0.9375 --elit_group_size 8
 
-# 256px — sample budgets between 50% and 75% masking
-accelerate launch train.py --model ELIT-SiT-XL/2 --exp-name elit-sit-xl-2-256px --data-dir [DATA_DIR] --elit-min-mask-prob 0.5 --elit-max-mask-prob 0.75 --elit_group_size 4
+
 ```
 
 ### DFM training
@@ -171,19 +181,24 @@ Please refer to [DFM repo](https://github.com/snap-research/dfm) for full detail
 
 ## 4. Sampling
 
-Sampling uses the unified `generate.py` script with DDP:
+Sampling uses the unified `generate.py` script with DDP. It accepts two YAML configs:
+- `--train-config` for model architecture (from `experiments/train/`)
+- `--eval-config` for sampling/evaluation settings (from `experiments/generation/`)
+
+CLI arguments always override YAML values. Priority: CLI > eval-config > train-config > defaults.
 
 ### 4.1 ELIT-SiT
 
 ```bash
-# From CLI args
+# From train config + eval config
+torchrun --nproc_per_node=8 generate.py \
+    --train-config experiments/train/elit_sit_xl_256.yaml \
+    --eval-config  experiments/generation/elit_full_budget_cfg_1_0_50_steps_ode_ema_50k_samples.yaml \
+    --ckpt exps/elit-sit-xl-2-256px/checkpoints/0400000.pt
+
+# From CLI args only
 torchrun --nproc_per_node=8 generate.py \
     --model ELIT-SiT-XL/2 --ckpt exps/elit-sit-xl-2-256px/checkpoints/0400000.pt
-
-# Or from YAML config
-torchrun --nproc_per_node=8 generate.py \
-    --config experiments_updated/generation/elit_sit_b_256.yaml \
-    --ckpt exps/elit-sit-b-2-256px/checkpoints/0400000.pt
 ```
 
 ### 4.2 Variable Budget Inference
@@ -193,59 +208,99 @@ ELIT supports controlling the inference budget via the `--inference-budget` argu
 ```bash
 # Full budget (100% tokens)
 torchrun --nproc_per_node=8 generate.py \
-    --config experiments_updated/generation/elit_sit_b_256.yaml \
+    --train-config experiments/train/elit_sit_xl_256.yaml \
     --ckpt path/to/ckpt.pt --inference-budget 1.0
 
-# Half budget (50% tokens) — ~50% fewer FLOPs in the core transformer
+# Half budget (50% tokens)
 torchrun --nproc_per_node=8 generate.py \
-    --config experiments_updated/generation/elit_sit_b_256.yaml \
+    --train-config experiments/train/elit_sit_xl_256.yaml \
     --ckpt path/to/ckpt.pt --inference-budget 0.5
 
 # Quarter budget (25% tokens)
 torchrun --nproc_per_node=8 generate.py \
-    --config experiments_updated/generation/elit_sit_b_256.yaml \
+    --train-config experiments/train/elit_sit_xl_256.yaml \
     --ckpt path/to/ckpt.pt --inference-budget 0.25
 ```
 
 ### 4.3 Multi-Budget Analysis
 
-To generate images at **all** budgets, measure latency and FLOPs, and produce comparison plots:
+To generate images at **all** budgets, measure FLOPs, and produce comparison plots:
 
 ```bash
 python elit_multibudget_inference.py \
-    --model ELIT-SiT-XL/2 \
+    --train-config experiments/train/elit_sit_xl_256.yaml \
     --ckpt path/to/ckpt.pt \
-    --resolution 256 \
     --class-label 207 \
     --output-dir multibudget_results
+```
+
+<p align="center">
+  <img src="assets/multibudget_results/budget_vs_flops.png" width="500">
+</p>
+<p align="center">
+  <img src="assets/multibudget_results/image_grid.png" width="800">
+</p>
+
+### 4.4 Cheap CFG (CCFG)
+
+Standard classifier-free guidance (CFG) runs both the conditional and unconditional paths at the same inference budget, effectively doubling the compute per step. **CCFG** (Cheap CFG) exploits the fact that the unconditional path only provides a "what not to generate" signal and doesn't need full compute. By running the unconditional path at a much lower budget (e.g. 1/16 of tokens), CCFG saves ~33% of per-step FLOPs with minimal quality impact.
+
+```bash
+# FID evaluation with CCFG (via eval config)
+torchrun --nproc_per_node=8 generate.py \
+    --train-config experiments/train/elit_sit_xl_256.yaml \
+    --eval-config  experiments/generation/elit_ccfg_cfg_4_0_50_steps_ode_ema_50k_samples.yaml \
+    --ckpt path/to/ckpt.pt
+
+# Or via CLI args
+torchrun --nproc_per_node=8 generate.py \
+    --train-config experiments/train/elit_sit_xl_256.yaml \
+    --ckpt path/to/ckpt.pt \
+    --cfg-scale 4.0 --inference-budget 1.0 --unconditional-inference-budget 0.0625
+```
+
+To compare CFG vs CCFG across multiple guidance scales with FLOPs measurements and image grids:
+
+```bash
+python elit_ccfg_inference.py \
+    --train-config experiments/train/elit_sit_xl_256.yaml \
+    --ckpt path/to/ckpt.pt \
+    --inference-budget 1.0 \
+    --unconditional-inference-budget 0.0625 \
+    --cfg-scales 1 2 3 4 5 \
+    --class-label 207 \
+    --output-dir ccfg_results
+```
+
+<p align="center">
+  <img src="assets/ccfg_results/cfg_vs_ccfg_flops.png" width="500">
+</p>
+<p align="center">
+  <img src="assets/ccfg_results/cfg_vs_ccfg_grid.png" width="800">
+</p>
+
+The eval config YAML supports the `unconditional_inference_budget` field alongside `inference_budget`:
+
+```yaml
+inference_budget: 1.0
+unconditional_inference_budget: 0.0625   # 1/16 budget for unconditional CFG path
+cfg_scale: 4.0
 ```
 
 ---
 
 ## 5. Evaluation
 
-We provide evaluation scripts in `experiments_updated/evaluation/` that generate samples and compute FID, sFID, IS, Precision, and Recall.
+We provide evaluation scripts in `experiments/evaluation/` that generate samples and compute FID, sFID, IS, Precision, and Recall.
 
 ```bash
-bash experiments_updated/evaluation/eval_elit_sit_b_256.sh
+bash experiments/evaluation/eval_elit_sit_xl_256.sh
 ```
 
-This will generate samples under the `results/` directory and an `.npz` file which can be used for evaluation. To run the reference TensorFlow evaluation on ImageNet, we use the [ADM evaluation](https://github.com/openai/guided-diffusion/tree/main/evaluations) suite.
+This will generate samples under the `results/` directory and an `.npz` file which can be used for evaluation. To obtain the referene statistics, refer to [ADM evaluation](https://github.com/openai/guided-diffusion/tree/main/evaluations) suite.
 
 ---
 
-<!-- ## Pretrained Checkpoints -->
-
-<!-- TODO: Add pretrained checkpoint download links -->
-<!-- TODO: Add checkpoint table with model name, resolution, FID, download link -->
-
-<!-- | Model | Resolution | Steps | FID | sFID | IS | Download |
-|-------|-----------|-------|-----|------|----|----------|
-| ELIT-SiT-B/2 | 256×256 | 400K | — | — | — | TODO |
-| ELIT-SiT-XL/2 | 256×256 | 400K | — | — | — | TODO |
-| ELIT-SiT-XL/2 | 512×512 | 400K | — | — | — | TODO |
-
---- -->
 
 ## Large-scale training strategy
 For large-scale training, we recommend using the settings in Appendix D: increase model capacity while keeping compute bounded by  reducing tokens at the bottleneck. Concretely, we drop75% of tokens in the bottleneck throughout training, so the model can prioritize learning global structure while still benefiting from a larger parameter budget without increasing training or inference FLOPs.
@@ -269,15 +324,10 @@ This code is mainly built upon [REPA](https://github.com/sihyun-yu/REPA). We tha
 ## BibTeX
 
 ```bibtex
-@inproceedings{hajiali2026elit,
-  title={One Model, Many Budgets: Elastic Latent Interfaces
-    for Diffusion Transformers},
-  author={Moayed Haji-Ali and Willi Menapace and Ivan Skorokhodov
-    and Dogyun Park and Anil Kag and Michael Vasilkovsky
-    and Sergey Tulyakov and Vicente Ordonez
-    and Aliaksandr Siarohin},
-  booktitle={Proceedings of the IEEE/CVF Conference on Computer
-    Vision and Pattern Recognition (CVPR)},
+@article{elit,
+  title={One Model, Many Budgets: Elastic Latent Interfaces for Diffusion Transformers},
+  author={Haji-Ali, Moayed and Menapace, Willi and Skorokhodov, Ivan and Park, Dogyun and Kag, Anil and Vasilkovsky, Michael and Tulyakov, Sergey and Ordonez, Vicente and Siarohin, Aliaksandr},
+  journal={arXiv preprint arXiv:2603.12245},
   year={2026}
 }
 ```

@@ -41,6 +41,8 @@ class SiTELIT(SiT):
         group_size=8,
         elit_max_mask_prob=0.5,
         elit_min_mask_prob=None,
+        elit_read_depth=1,
+        elit_write_depth=1,
         **block_kwargs # fused_attn
     ):
         # Call parent init - sets up the base SiT architecture
@@ -71,6 +73,8 @@ class SiTELIT(SiT):
         self.group_size = group_size
         self.elit_max_mask_prob = elit_max_mask_prob
         self.elit_min_mask_prob = elit_min_mask_prob if elit_min_mask_prob is not None else elit_max_mask_prob
+        self.elit_read_depth = elit_read_depth
+        self.elit_write_depth = elit_write_depth
         
         # Initialize ELIT components if enabled
         self.input_token_editor = None
@@ -97,13 +101,14 @@ class SiTELIT(SiT):
                 "window_size": group_size,
                 "patch_channels": hidden_size,
                 "use_learnable_positional_encoding": True,
+                "use_latent_learnable_positional_encoding": True, # since we are not using RoPE, we need to use learnable positional encoding for latent tokens
                 "zero_init_latent_tokens": False,
                 "fit_layer_config":  {
                     "target": FiTLayerWModulationLayer,
                     "window_size": group_size,
                     "patch_channels": hidden_size,
                     "num_heads": num_heads,
-                    "read_depth": 1}}
+                    "depth": elit_read_depth}}
             
             # Read operation 
             self.input_token_editor = SequentialInputTokenEditor({
@@ -120,7 +125,7 @@ class SiTELIT(SiT):
             write_layer_config = {
                 "target": FiTWriteLayer,
                 "window_size": group_size,
-                "depth": 1,
+                "depth": elit_write_depth,
                 "qk_norm": True,
                 "patch_channels": hidden_size,
                 "num_heads": num_heads,
@@ -142,6 +147,39 @@ class SiTELIT(SiT):
             # Initialize ELIT-specific weights
             self.input_token_editor.reset_parameters()
             self.output_token_editor.reset_parameters()
+            
+            # Zero-init ELIT output projections so read/write start as near-identity.
+            # This matches the DiT block pattern where adaLN gates are zero-initialized.
+            self._zero_init_elit_layers()
+
+    def _zero_init_elit_layers(self):
+        """Zero-init output projections of ELIT read/write layers for stable training.
+        
+        This mirrors the DiT convention of zero-initializing adaLN modulation gates
+        so that new components start as near-identity and gradually learn.
+        """
+        import torch.nn as nn
+        
+        # Zero-init read layer's adaLN modulation (gates start at zero = identity)
+        for adapter in self.input_token_editor.adapters:
+            if hasattr(adapter, 'fit_layer'):
+                fit_layer = adapter.fit_layer
+                if hasattr(fit_layer, 'adaLN_modulation'):
+                    nn.init.constant_(fit_layer.adaLN_modulation[-1].weight, 0)
+                    nn.init.constant_(fit_layer.adaLN_modulation[-1].bias, 0)
+        
+        # Zero-init write layer's cross-attention output projection
+        for adapter in self.output_token_editor.adapters:
+            if hasattr(adapter, 'patches_attend_to_latents'):
+                for attn_layer in adapter.patches_attend_to_latents:
+                    nn.init.constant_(attn_layer.proj.weight, 0)
+                    nn.init.constant_(attn_layer.proj.bias, 0)
+            if hasattr(adapter, 'write_ff'):
+                for ff_layer in adapter.write_ff:
+                    # Zero-init last linear in MLP (fc2)
+                    nn.init.constant_(ff_layer.fc2.weight, 0)
+                    if ff_layer.fc2.bias is not None:
+                        nn.init.constant_(ff_layer.fc2.bias, 0)
 
     # ELIT helper methods
 

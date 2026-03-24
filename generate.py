@@ -9,25 +9,26 @@ Unified sampling script for SiT, DFM-SiT, and ELIT-SiT models using DDP.
 Saves a .npz file that can be used to compute FID and other evaluation metrics.
 
 Supports configuration via:
-  1. YAML config file:  --config path/to/config.yaml
-  2. CLI arguments:     --model SiT-B/2 --cfg-scale 1.5 ...
-  CLI arguments always override YAML values.
+  1. Training YAML:    --train-config path/to/train.yaml   (model architecture)
+  2. Evaluation YAML:  --eval-config  path/to/eval.yaml    (sampling & output)
+  3. CLI arguments:    --cfg-scale 1.5 ...
+  Priority: CLI args > eval-config > train-config > defaults.
 
 Usage examples:
-  # Standard SiT
-  torchrun --nproc_per_node=8 generate.py --model SiT-XL/2 --ckpt path/to/ckpt.pt
+  # Train config (model) + eval config (sampling) + checkpoint
+  torchrun --nproc_per_node=8 generate.py \
+      --train-config experiments/train/elit_sit_xl_256.yaml \
+      --eval-config  experiments/generation/elit_sit_xl_256.yaml \
+      --ckpt exps/elit-sit-xl-2-256px/checkpoints/0400000.pt
 
-  # DFM-SiT
-  torchrun --nproc_per_node=8 generate.py --model DFM-SiT-B/2 --ckpt path/to/ckpt.pt
+  # Only train config (uses default eval settings)
+  torchrun --nproc_per_node=8 generate.py \
+      --train-config experiments/train/sit_xl_2_256.yaml \
+      --ckpt path/to/ckpt.pt
 
-  # ELIT-SiT
-  torchrun --nproc_per_node=8 generate.py --model ELIT-SiT-B/2 --ckpt path/to/ckpt.pt
-
-  # From generation YAML config
-  torchrun --nproc_per_node=8 generate.py --config experiments_updated/generation/sit_b_256.yaml
-
-  # From training config (model settings derived automatically)
-  torchrun --nproc_per_node=8 generate.py --train-config experiments_updated/train/sit_b_256.yaml --ckpt path/to/ckpt.pt
+  # Pure CLI (no config files)
+  torchrun --nproc_per_node=8 generate.py \
+      --model ELIT-SiT-B/2 --ckpt path/to/ckpt.pt --inference-budget 0.5
 """
 
 import torch
@@ -129,6 +130,8 @@ def build_model(args, device):
             elit_max_mask_prob=args.elit_max_mask_prob,
             elit_min_mask_prob=args.elit_min_mask_prob,
             group_size=args.elit_group_size,
+            elit_read_depth=args.elit_read_depth,
+            elit_write_depth=args.elit_write_depth,
         ))
 
     model = ALL_MODELS[args.model](**model_kwargs).to(device)
@@ -180,6 +183,8 @@ def sample_sit_or_elit(model, z, y, args, device):
         guidance_high=args.guidance_high,
         path_type=args.path_type,
         inference_budget=args.inference_budget,
+        unconditional_inference_budget=getattr(args, 'unconditional_inference_budget', None),
+        autoguidance=getattr(args, 'autoguidance', False),
     )
     if args.mode == "sde":
         samples = euler_maruyama_sampler(**sampling_kwargs).to(torch.float32)
@@ -427,7 +432,11 @@ DEFAULTS = dict(
     elit_max_mask_prob=0.5,
     elit_min_mask_prob=None,
     elit_group_size=4,
+    elit_read_depth=1,
+    elit_write_depth=1,
     inference_budget=None,
+    unconditional_inference_budget=None,
+    autoguidance=False,
     # DFM
     stages_count=2,
     stage_sampling_thresholds=[0.1],
@@ -443,31 +452,31 @@ def build_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # From CLI args
+  # Train config + eval config
   torchrun --nproc_per_node=8 generate.py \\
-      --model SiT-XL/2 --ckpt path/to/ckpt.pt --cfg-scale 1.8
+      --train-config experiments/train/elit_sit_xl_256.yaml \\
+      --eval-config  experiments/generation/elit_sit_xl_256.yaml \\
+      --ckpt path/to/ckpt.pt
 
-  # From generation YAML config (CLI args override YAML)
+  # Train config only (default eval settings)
   torchrun --nproc_per_node=8 generate.py \\
-      --config generation_config.yaml --ckpt path/to/ckpt.pt
+      --train-config experiments/train/sit_xl_2_256.yaml \\
+      --ckpt path/to/ckpt.pt --cfg-scale 1.8
 
-  # From training YAML (model, encoder_depth, exp_name derived automatically)
-  torchrun --nproc_per_node=8 generate.py \\
-      --train-config experiments_updated/train/elit_sit_b_256.yaml \\
-      --ckpt exps/elit-sit-b-2-256px/checkpoints/0400000.pt
-
-  # ELIT model with inference budget
+  # Pure CLI
   torchrun --nproc_per_node=8 generate.py \\
       --model ELIT-SiT-B/2 --ckpt path/to/ckpt.pt --inference-budget 0.5
 """,
     )
 
     # Config files
-    parser.add_argument("--config", type=str, default=None,
-                        help="Path to generation YAML config file. CLI args override YAML values.")
     parser.add_argument("--train-config", type=str, default=None,
-                        help="Path to a training YAML config. Extracts model, encoder_depth, "
-                             "exp_name, etc. Generation --config and CLI args override.")
+                        help="Path to a training YAML config. Extracts model architecture "
+                             "settings (model, resolution, exp_name, ELIT/DFM/REPA params, etc.).")
+    parser.add_argument("--eval-config", type=str, default=None,
+                        help="Path to an evaluation YAML config. Sets sampling and output "
+                             "settings (cfg_scale, num_steps, inference_budget, etc.). "
+                             "CLI args override.")
 
     # seed
     parser.add_argument("--global-seed", type=int, default=d["global_seed"])
@@ -531,8 +540,23 @@ Examples:
                         help="[ELIT] Minimum masking probability. Defaults to max (single budget).")
     parser.add_argument("--elit-group-size", type=int, default=d["elit_group_size"],
                         help="[ELIT] Group size for token masking.")
+    parser.add_argument("--elit-read-depth", type=int, default=d["elit_read_depth"],
+                        help="[ELIT] Depth of the read (cross-attention) layer.")
+    parser.add_argument("--elit-write-depth", type=int, default=d["elit_write_depth"],
+                        help="[ELIT] Depth of the write (cross-attention) layer.")
     parser.add_argument("--inference-budget", type=float, default=d["inference_budget"],
                         help="[ELIT] Budget for ELIT masking at inference time.")
+    parser.add_argument("--unconditional-inference-budget", type=float,
+                        default=d["unconditional_inference_budget"],
+                        help="[ELIT/CCFG] Budget for the unconditional CFG path. "
+                             "When set, enables Cheap CFG: the unconditional path "
+                             "runs at this (lower) budget while the conditional path "
+                             "uses --inference-budget.")
+    parser.add_argument("--autoguidance", action="store_true", default=d["autoguidance"],
+                        help="[ELIT] Autoguidance: keep the real class label on the "
+                             "'unconditional' path instead of dropping the condition. "
+                             "Guidance comes from the capacity gap (budget difference) "
+                             "rather than from classifier-free conditioning.")
 
     # DFM-specific
     parser.add_argument("--stages-count", type=int, default=d["stages_count"],
@@ -555,11 +579,11 @@ def _normalize_key(key):
 def parse_args(input_args=None):
     """
     Parse arguments with YAML + CLI support.
-    Priority: CLI args  >  generation config  >  train config  >  defaults.
+    Priority: CLI args  >  eval config  >  train config  >  defaults.
     """
     parser = build_parser()
 
-    # First, do a preliminary parse to get --config and --train-config
+    # First, do a preliminary parse to get --train-config and --eval-config
     preliminary, _ = parser.parse_known_args(input_args)
 
     merged = dict(DEFAULTS)
@@ -570,9 +594,10 @@ def parse_args(input_args=None):
         'model', 'exp_name', 'encoder_depth', 'resolution', 'num_classes',
         'fused_attn', 'qk_norm', 'path_type',
         # REPA
-        'enable_repa', 'proj_coeff', 'enc_type',
+        'enable_repa', 'proj_coeff', 'enc_type', 'projector_embed_dims',
         # ELIT
         'elit_max_mask_prob', 'elit_min_mask_prob', 'elit_group_size',
+        'elit_read_depth', 'elit_write_depth',
         # DFM
         'stages_count', 'stage_weights',
     }
@@ -580,17 +605,16 @@ def parse_args(input_args=None):
         with open(preliminary.train_config, 'r') as f:
             train_config = yaml.safe_load(f) or {}
         train_config = {_normalize_key(k): v for k, v in train_config.items()}
-        # Only import relevant keys
         for k, v in train_config.items():
             if k in TRAIN_KEYS_TO_IMPORT:
                 merged[k] = v
 
-    # Layer 2: generation config (overrides train config)
-    if preliminary.config is not None:
-        with open(preliminary.config, 'r') as f:
-            yaml_config = yaml.safe_load(f) or {}
-        yaml_config = {_normalize_key(k): v for k, v in yaml_config.items()}
-        merged.update(yaml_config)
+    # Layer 2: eval config (overrides train config for eval-related keys)
+    if preliminary.eval_config is not None:
+        with open(preliminary.eval_config, 'r') as f:
+            eval_yaml = yaml.safe_load(f) or {}
+        eval_yaml = {_normalize_key(k): v for k, v in eval_yaml.items()}
+        merged.update(eval_yaml)
 
     parser.set_defaults(**merged)
 

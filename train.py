@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
+from torch.optim.lr_scheduler import ConstantLR, LinearLR, SequentialLR
 
 # Import all model registries
 from models.sit import SiT_models as _sit_models
@@ -273,6 +274,8 @@ def main(args):
             elit_max_mask_prob=args.elit_max_mask_prob,
             elit_min_mask_prob=args.elit_min_mask_prob,
             group_size=args.elit_group_size,
+            elit_read_depth=args.elit_read_depth,
+            elit_write_depth=args.elit_write_depth,
         ))
     
     model = ALL_MODELS[args.model](**model_kwargs)
@@ -333,10 +336,37 @@ def main(args):
         betas=(args.adam_beta1, args.adam_beta2),
         weight_decay=args.adam_weight_decay,
         eps=args.adam_epsilon,
-    )    
-    
+    )
+
+    # Setup LR scheduler:
+    if args.lr_scheduler_type == "constant_with_linear_warmup" and args.warmup_steps > 0:
+        warmup_iters = args.warmup_steps
+        total_iters = args.max_train_steps
+        start_factor = 1.0 / max(warmup_iters, 1)
+        scheduler1 = LinearLR(
+            optimizer,
+            start_factor=start_factor,
+            total_iters=warmup_iters,
+        )
+        scheduler2 = ConstantLR(
+            optimizer,
+            factor=1.0,
+            total_iters=total_iters - warmup_iters,
+        )
+        lr_scheduler = SequentialLR(
+            optimizer,
+            schedulers=[scheduler1, scheduler2],
+            milestones=[warmup_iters],
+        )
+        if accelerator.is_main_process:
+            print(f"Using constant_with_linear_warmup scheduler: warmup_steps={warmup_iters}, lr={args.learning_rate}")
+    else:
+        lr_scheduler = None
+        if accelerator.is_main_process:
+            print(f"Using constant LR: {args.learning_rate}")
+
     # Setup data:
-    train_dataset = CustomDataset(args.data_dir)
+    train_dataset = CustomDataset(args.data_dir, s3_cache_dir=args.s3_cache_dir)
     local_batch_size = int(args.batch_size // accelerator.num_processes)
     train_dataloader = DataLoader(
         train_dataset,
@@ -384,6 +414,12 @@ def main(args):
         ema.load_state_dict(ckpt['ema'])
         optimizer.load_state_dict(ckpt['opt'])
         global_step = ckpt['steps']
+        if lr_scheduler is not None and 'lr_scheduler' in ckpt:
+            lr_scheduler.load_state_dict(ckpt['lr_scheduler'])
+        elif lr_scheduler is not None:
+            # Checkpoint has no scheduler state — fast-forward the scheduler
+            for _ in range(global_step):
+                lr_scheduler.step()
         if accelerator.is_main_process:
             logger.info(f"Resumed training from checkpoint: {ckpt_name} (step {global_step})")
 
@@ -468,6 +504,8 @@ def main(args):
                     params_to_clip = model.parameters()
                     grad_norm = accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
                 optimizer.step()
+                if lr_scheduler is not None:
+                    lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
 
                 if accelerator.sync_gradients:
@@ -486,47 +524,52 @@ def main(args):
                         "args": args,
                         "steps": global_step,
                     }
+                    if lr_scheduler is not None:
+                        checkpoint["lr_scheduler"] = lr_scheduler.state_dict()
                     checkpoint_path = f"{checkpoint_dir}/{global_step:07d}.pt"
                     torch.save(checkpoint, checkpoint_path)
                     logger.info(f"Saved checkpoint to {checkpoint_path}")
 
-            if (global_step == 1 or (global_step % args.sampling_steps == 0 and global_step > 0)):
-                if model_type == 'dfm':
-                    sample_result = sample_dfm(
-                        model, multiscale_xT, ys, args, vae, 
-                        latents_scale, latents_bias, accelerator,
-                        laplacian_decomposer, multiscale_gt_xs
-                    )
-                    out_samples = accelerator.gather(sample_result["samples"].to(torch.float32))
-                    gt_samples_decoded = vae.decode((gt_xs - latents_bias) / latents_scale).sample
-                    gt_samples_decoded = (gt_samples_decoded + 1) / 2.
-                    gt_samples = accelerator.gather(gt_samples_decoded.to(torch.float32))
-                    
-                    log_dict = sample_result.get("extra_log", {})
-                    log_dict["samples_recomposed"] = wandb.Image(array2grid(out_samples))
-                    log_dict["gt_samples_recomposed"] = wandb.Image(array2grid(gt_samples))
-                    accelerator.log(log_dict)
-                else:
-                    sample_result = sample_sit(
-                        model, xT, ys, args, vae,
-                        latents_scale, latents_bias, accelerator
-                    )
-                    out_samples = accelerator.gather(sample_result["samples"].to(torch.float32))
-                    gt_samples_decoded = vae.decode((gt_xs - latents_bias) / latents_scale).sample
-                    gt_samples_decoded = (gt_samples_decoded + 1) / 2.
-                    gt_samples = accelerator.gather(gt_samples_decoded.to(torch.float32))
-                    
-                    accelerator.log({
-                        "samples": wandb.Image(array2grid(out_samples)),
-                        "gt_samples": wandb.Image(array2grid(gt_samples))
-                    })
+            if args.sampling_steps != 0 and (global_step == 1 or (global_step % args.sampling_steps == 0 and global_step > 0)):
+                with torch.no_grad():
+                    if model_type == 'dfm':
+                        sample_result = sample_dfm(
+                            model, multiscale_xT, ys, args, vae, 
+                            latents_scale, latents_bias, accelerator,
+                            laplacian_decomposer, multiscale_gt_xs
+                        )
+                        out_samples = accelerator.gather(sample_result["samples"].to(torch.float32))
+                        gt_samples_decoded = vae.decode((gt_xs - latents_bias) / latents_scale).sample
+                        gt_samples_decoded = (gt_samples_decoded + 1) / 2.
+                        gt_samples = accelerator.gather(gt_samples_decoded.to(torch.float32))
+                        
+                        log_dict = sample_result.get("extra_log", {})
+                        log_dict["samples_recomposed"] = wandb.Image(array2grid(out_samples))
+                        log_dict["gt_samples_recomposed"] = wandb.Image(array2grid(gt_samples))
+                        accelerator.log(log_dict)
+                    else:
+                        sample_result = sample_sit(
+                            model, xT, ys, args, vae,
+                            latents_scale, latents_bias, accelerator
+                        )
+                        out_samples = accelerator.gather(sample_result["samples"].to(torch.float32))
+                        gt_samples_decoded = vae.decode((gt_xs - latents_bias) / latents_scale).sample
+                        gt_samples_decoded = (gt_samples_decoded + 1) / 2.
+                        gt_samples = accelerator.gather(gt_samples_decoded.to(torch.float32))
+                        
+                        accelerator.log({
+                            "samples": wandb.Image(array2grid(out_samples)),
+                            "gt_samples": wandb.Image(array2grid(gt_samples))
+                        })
                 logging.info("Generating EMA samples done.")
 
+            current_lr = optimizer.param_groups[0]["lr"]
             logs = {
                 "loss": accelerator.gather(loss_mean).mean().detach().item(), 
                 "proj_loss": (accelerator.gather(proj_loss_mean).mean().detach().item()
                               if isinstance(proj_loss_mean, torch.Tensor) else proj_loss_mean),
-                "grad_norm": accelerator.gather(grad_norm).mean().detach().item()
+                "grad_norm": accelerator.gather(grad_norm).mean().detach().item(),
+                "lr": current_lr,
             }
             progress_bar.set_postfix(**logs)
             accelerator.log(logs, step=global_step)
@@ -560,6 +603,7 @@ DEFAULTS = dict(
     qk_norm=False,
     # dataset
     data_dir="../data/imagenet256",
+    s3_cache_dir=None,
     resolution=256,
     batch_size=256,
     # precision
@@ -576,6 +620,9 @@ DEFAULTS = dict(
     adam_weight_decay=0.0,
     adam_epsilon=1e-08,
     max_grad_norm=1.0,
+    # LR scheduler
+    lr_scheduler_type="constant_with_linear_warmup",
+    warmup_steps=0,
     # seed
     seed=0,
     # cpu
@@ -597,6 +644,8 @@ DEFAULTS = dict(
     elit_max_mask_prob=0.0,
     elit_min_mask_prob=None,
     elit_group_size=4,
+    elit_read_depth=1,
+    elit_write_depth=1,
 )
 
 
@@ -633,6 +682,8 @@ def build_parser():
 
     # dataset
     parser.add_argument("--data-dir", type=str, default=d["data_dir"])
+    parser.add_argument("--s3-cache-dir", type=str, default=d["s3_cache_dir"],
+                        help="Local cache directory for S3 data. Only used when data-dir is an s3:// path.")
     parser.add_argument("--resolution", type=int, choices=[256, 512], default=d["resolution"])
     parser.add_argument("--batch-size", type=int, default=d["batch_size"])
 
@@ -652,6 +703,14 @@ def build_parser():
     parser.add_argument("--adam-weight-decay", type=float, default=d["adam_weight_decay"])
     parser.add_argument("--adam-epsilon", type=float, default=d["adam_epsilon"])
     parser.add_argument("--max-grad-norm", type=float, default=d["max_grad_norm"])
+
+    # LR scheduler
+    parser.add_argument("--lr-scheduler-type", type=str, default=d["lr_scheduler_type"],
+                        choices=["constant", "constant_with_linear_warmup"],
+                        help="LR scheduler type. 'constant' = no scheduling, "
+                             "'constant_with_linear_warmup' = linear warmup then constant.")
+    parser.add_argument("--warmup-steps", type=int, default=d["warmup_steps"],
+                        help="Number of warmup steps for LR scheduler (0 = no warmup)")
 
     # seed
     parser.add_argument("--seed", type=int, default=d["seed"])
@@ -689,6 +748,10 @@ def build_parser():
                              "If different from max, mask prob is uniformly sampled from valid levels in [min, max].")
     parser.add_argument("--elit-group-size", type=int, default=d["elit_group_size"],
                         help="[ELIT] Group size for ELIT token masking")
+    parser.add_argument("--elit-read-depth", type=int, default=d["elit_read_depth"],
+                        help="[ELIT] Depth of the read (cross-attention) layer")
+    parser.add_argument("--elit-write-depth", type=int, default=d["elit_write_depth"],
+                        help="[ELIT] Depth of the write (cross-attention) layer")
 
     return parser
 

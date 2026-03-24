@@ -431,6 +431,10 @@ class LatentTokensGroupAdapter(nn.Module):
             "use_learnable_positional_encoding",
             True,
         )# default to True: when using RoPE, input patches have no positional information and laernable pos emb is needed
+        self.use_latent_learnable_positional_encoding = config.get(
+            "use_latent_learnable_positional_encoding",
+            True,
+        )# when not using RoPE, latent tokens have no positional information and learnable pos emb is needed
         
         self.fit_layer_config = config.get("fit_layer_config", {})
         
@@ -452,6 +456,11 @@ class LatentTokensGroupAdapter(nn.Module):
         if self.use_learnable_positional_encoding:
             self.pos_embed = nn.Parameter(
                 torch.randn((self.num_tokens, hidden_size)) * 0.02,
+            )
+        if self.use_latent_learnable_positional_encoding:
+            max_tokens = 64 * 64 # maximum number of tokens in a single image, assuming 512x512 input size
+            self.latent_pos_embed = nn.Parameter(
+                torch.randn((max_tokens, hidden_size)) * 0.02,
             )
         
         fit_layer_target = self.fit_layer_config.get("target")
@@ -480,6 +489,11 @@ class LatentTokensGroupAdapter(nn.Module):
 
         block_kwargs['patches'] = patches
         latent_tokens, thw_shape, block_kwargs = self.fit_layer(latent_tokens, thw_shape, block_kwargs=block_kwargs) 
+        
+        
+        # apply positional encoding if needed
+        if self.use_latent_learnable_positional_encoding:
+            latent_tokens = latent_tokens + self.latent_pos_embed[None, :latent_tokens.shape[1], :]
             
         return latent_tokens, thw_shape, block_kwargs
     
@@ -491,6 +505,8 @@ class LatentTokensGroupAdapter(nn.Module):
         
         if self.use_learnable_positional_encoding:
             nn.init.normal_(self.pos_embed, std=0.02)
+        if self.use_latent_learnable_positional_encoding:
+            nn.init.normal_(self.latent_pos_embed, std=0.02)
 
 
  

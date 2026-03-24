@@ -9,9 +9,7 @@ samples
 debug*
 logs
 results
-experiments
-experiments_updated
 data
 model_cache
 evaluation/reference_stats
-multibudget_results
+nohup.out

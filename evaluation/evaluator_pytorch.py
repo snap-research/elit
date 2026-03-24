@@ -407,8 +407,6 @@ def main():
     
     fid = sample_stats.frechet_distance(ref_stats)
     print(f"FID: {fid}")
-    sfid = sample_stats_spatial.frechet_distance(ref_stats_spatial)
-    print(f"sFID: {sfid}")
     inception_score = evaluator.compute_inception_score_from_images(sample_images)
     print(f"Inception Score: {inception_score}")
     
@@ -420,13 +418,12 @@ def main():
     print("\n" + "=" * 70)
     print("NOTE: sFID may not match TensorFlow reference exactly due to")
     print("different InceptionV3 implementations. For exact metrics, use:")
-    print("/nfs/mali6/external_repos/guided-diffusion/evaluations/evaluator.py")
+    print("https://github.com/openai/guided-diffusion/tree/main/evaluations")
     print("=" * 70)
     
     results = {
         'is': float(inception_score),
         'fid': float(fid),
-        'sfid': float(sfid),
         'precision': float(precision),
         'recall': float(recall)
     }

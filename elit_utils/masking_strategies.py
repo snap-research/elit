@@ -129,7 +129,6 @@ class MultiOrderedTokenMaskingStrategy(OrderedTokenMaskingStrategy):
     def __call__(self, x, thw_shape, train_step=None, inference_budget=None, **kwargs) -> Tuple[torch.Tensor, Dict]:
         """
         """
-
         if inference_budget is not None:
             # use inference budget from data entries
             budget = inference_budget
