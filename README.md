@@ -11,6 +11,31 @@
 
 *<sup>1</sup>Rice University, <sup>2</sup>Snap Inc.
 
+## Table of Contents
+- [TL;DR](#tldr)
+- [Method Implementation](#method-implementation)
+- [Experimental Results](#experimental-results)
+  - [ImageNet 256×256](#imagenet-256256)
+  - [ImageNet 512×512](#imagenet-512512)
+  - [Downloading Checkpoints](#downloading-checkpoints)
+- [1. Environment Setup](#1-environment-setup)
+- [2. Dataset](#2-dataset)
+  - [2.1 Dataset Download](#21-dataset-download)
+- [3. Training](#3-training)
+  - [Example Training](#example-training)
+  - [Key ELIT Hyperparameters](#key-elit-hyperparameters)
+  - [Multibudget Training](#multibudget-training)
+  - [DFM Training](#dfm-training)
+- [4. Sampling](#4-sampling)
+  - [4.1 ELIT-SiT](#41-elit-sit)
+  - [4.2 Variable Budget Inference](#42-variable-budget-inference)
+  - [4.3 Multi-Budget Analysis](#43-multi-budget-analysis)
+  - [4.4 Cheap CFG (CCFG)](#44-cheap-cfg-ccfg)
+- [5. Evaluation](#5-evaluation)
+- [Large-scale Training Strategy](#large-scale-training-strategy)
+- [Acknowledgement](#acknowledgement)
+- [BibTeX](#bibtex)
+
 ## 🚀 Check Out Our Latest Work! 🎥🔊 
 
 > Our other work **[DFM: Decomposable Flow Matching](https://snap-research.github.io/dfm/)** — a simple framework for progressive scale-by-scale generation that achieves up to **50% faster convergence** compared to Flow Matching. **This repo also contains the code for DFM.**
